@@ -77,6 +77,7 @@ Per-thread isolated execution with virtual path translation:
 - **Providers**: `LocalSandboxProvider` (filesystem) and `AioSandboxProvider` (Docker, in community/)
 - **Virtual paths**: `/mnt/user-data/{workspace,uploads,outputs}` → thread-specific physical directories
 - **Skills path**: `/mnt/skills` → `deer-flow/skills/` directory
+- **Skills loading**: Recursively discovers nested `SKILL.md` files under `skills/{public,custom}` and preserves nested container paths
 - **Tools**: `bash`, `ls`, `read_file`, `write_file`, `str_replace`
 
 ### Subagent System
@@ -122,9 +123,15 @@ FastAPI application providing REST endpoints for frontend integration:
 | `POST /api/memory/reload` | Force memory reload |
 | `GET /api/memory/config` | Memory configuration |
 | `GET /api/memory/status` | Combined config + data |
-| `POST /api/threads/{id}/uploads` | Upload files (auto-converts PDF/PPT/Excel/Word to Markdown) |
+| `POST /api/threads/{id}/uploads` | Upload files (auto-converts PDF/PPT/Excel/Word to Markdown, rejects directory paths) |
 | `GET /api/threads/{id}/uploads/list` | List uploaded files |
 | `GET /api/threads/{id}/artifacts/{path}` | Serve generated artifacts |
+
+### IM Channels
+
+The IM bridge supports Feishu, Slack, and Telegram. Slack and Telegram still use the final `runs.wait()` response path, while Feishu now streams through `runs.stream(["messages-tuple", "values"])` and updates a single in-thread card in place.
+
+For Feishu card updates, DeerFlow stores the running card's `message_id` per inbound message and patches that same card until the run finishes, preserving the existing `OK` / `DONE` reaction flow.
 
 ---
 
@@ -161,6 +168,15 @@ models:
     model: gpt-4o
     api_key: $OPENAI_API_KEY
     supports_thinking: false
+    supports_vision: true
+
+  - name: gpt-5-responses
+    display_name: GPT-5 (Responses API)
+    use: langchain_openai:ChatOpenAI
+    model: gpt-5
+    api_key: $OPENAI_API_KEY
+    use_responses_api: true
+    output_version: responses/v1
     supports_vision: true
 ```
 
@@ -251,6 +267,10 @@ Key sections:
 - `subagents` - Subagent system (enabled/disabled)
 - `memory` - Memory system settings (enabled, storage, debounce, facts limits)
 
+Provider note:
+- `models[*].use` references provider classes by module path (for example `langchain_openai:ChatOpenAI`).
+- If a provider module is missing, DeerFlow now returns an actionable error with install guidance (for example `uv add langchain-google-genai`).
+
 ### Extensions Configuration (`extensions_config.json`)
 
 MCP servers and skill states in a single file:
@@ -264,6 +284,18 @@ MCP servers and skill states in a single file:
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-github"],
       "env": {"GITHUB_TOKEN": "$GITHUB_TOKEN"}
+    },
+    "secure-http": {
+      "enabled": true,
+      "type": "http",
+      "url": "https://api.example.com/mcp",
+      "oauth": {
+        "enabled": true,
+        "token_url": "https://auth.example.com/oauth/token",
+        "grant_type": "client_credentials",
+        "client_id": "$MCP_OAUTH_CLIENT_ID",
+        "client_secret": "$MCP_OAUTH_CLIENT_SECRET"
+      }
     }
   },
   "skills": {
